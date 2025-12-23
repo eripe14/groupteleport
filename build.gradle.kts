@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "pl.kdronia"
-version = "1.0-SNAPSHOT"
+version = "1.1-SNAPSHOT"
 
 val mainPackage = "pl.kdronia.groupteleport"
 val projectPrefix = "groupteleport"

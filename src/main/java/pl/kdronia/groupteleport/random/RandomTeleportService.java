@@ -1,92 +1,81 @@
 package pl.kdronia.groupteleport.random;
 
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import pl.kdronia.groupteleport.config.impl.PluginConfig;
 
-import java.util.Random;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class RandomTeleportService {
 
-    private final Random random;
     private final PluginConfig pluginConfig;
 
     public RandomTeleportService(PluginConfig pluginConfig) {
-        this.random = new Random();
         this.pluginConfig = pluginConfig;
     }
 
-    public CompletableFuture<Location> getRandomLocation(World world) {
-        return CompletableFuture.supplyAsync(() -> {
-            int randomX = this.generateRandomX();
-            int randomZ = this.generateRandomZ();
+    public CompletableFuture<Optional<Location>> getRandomLocation(World world) {
+        return this.findRandomLocationWithAttempts(world, 0);
+    }
 
-            return world.getChunkAtAsync(new Location(world, randomX, 100, randomZ))
-                    .thenApply(chunk -> this.findSafeLocation(world, randomX, randomZ))
-                    .thenCompose(location -> {
-                        if (this.isLocationSafe(location)) {
-                            return CompletableFuture.completedFuture(location);
-                        }
-                        return this.getRandomLocation(world);
-                    })
-                    .join();
-        });
+    private CompletableFuture<Optional<Location>> findRandomLocationWithAttempts(World world, int attempt) {
+        if (attempt >= this.pluginConfig.maxTeleportAttempts) {
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
+
+        int randomX = this.generateRandomX();
+        int randomZ = this.generateRandomZ();
+
+        return world.getChunkAtAsync(randomX >> 4, randomZ >> 4)
+                .thenCompose(chunk -> {
+                    Location safeLocation = this.findSafeLocation(world, randomX, randomZ);
+
+                    if (safeLocation != null) {
+                        return CompletableFuture.completedFuture(Optional.of(safeLocation));
+                    }
+
+                    return this.findRandomLocationWithAttempts(world, attempt + 1);
+                });
     }
 
     private int generateRandomX() {
-        return this.random.nextInt(
-                this.pluginConfig.randomTeleportMaxX - this.pluginConfig.randomTeleportMinX + 1
-        ) + this.pluginConfig.randomTeleportMinX;
+        return ThreadLocalRandom.current().nextInt(
+                this.pluginConfig.randomTeleportMinX,
+                this.pluginConfig.randomTeleportMaxX + 1
+        );
     }
 
     private int generateRandomZ() {
-        return this.random.nextInt(
-                this.pluginConfig.randomTeleportMaxZ - this.pluginConfig.randomTeleportMinZ + 1
-        ) + this.pluginConfig.randomTeleportMinZ;
+        return ThreadLocalRandom.current().nextInt(
+                this.pluginConfig.randomTeleportMinZ,
+                this.pluginConfig.randomTeleportMaxZ + 1
+        );
     }
 
     private Location findSafeLocation(World world, int x, int z) {
         int highestY = world.getHighestBlockYAt(x, z);
 
-        // Jeśli miejsce się nie załadowało, zwróć warunkową lokację
-        if (highestY <= 0) {
+        if (highestY <= world.getMinHeight()) {
             return null;
         }
 
-        Location location = new Location(world, x + 0.5, highestY + 1, z + 0.5);
+        int standBlockHeight = highestY + 1;
 
-        // Upewnij się że są puste bloki powyżej
-        Block headBlock = location.add(0, 1, 0).getBlock();
-        location.subtract(0, 1, 0);
+        Block groundBlock = world.getBlockAt(x, highestY, z);
+        Block feetBlock = world.getBlockAt(x, standBlockHeight, z);
+        Block headBlock = world.getBlockAt(x, highestY + 2, z);
 
-        if (headBlock.getType() == Material.AIR) {
-            return location;
+        if (!groundBlock.getType().isSolid()) {
+            return null;
         }
 
-        return null;
-    }
-
-    private boolean isLocationSafe(Location location) {
-        if (location == null || location.getWorld() == null) {
-            return false;
+        if (!feetBlock.getType().isAir() || !headBlock.getType().isAir()) {
+            return null;
         }
 
-        Block feetBlock = location.subtract(0, 1, 0).getBlock();
-        location.add(0, 1, 0);
-
-        Block headBlock = location.getBlock();
-        Block chestBlock = location.add(0, 1, 0).getBlock();
-        location.subtract(0, 1, 0);
-
-        // Feet muszą być na czymś solidnym
-        if (!feetBlock.getType().isSolid()) {
-            return false;
-        }
-
-        // Głowa i klatka piersiowa muszą być puste
-        return headBlock.getType() == Material.AIR && chestBlock.getType() == Material.AIR;
+        return new Location(world, x + 0.5, standBlockHeight, z + 0.5, 0f, 0f);
     }
 }

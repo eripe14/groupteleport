@@ -18,6 +18,10 @@ public class PluginConfig extends OkaeriConfig {
     public int randomTeleportMinZ = -1000;
     public int randomTeleportMaxZ = 1000;
 
+    public int maxTeleportAttempts = 50;
+
+    public boolean notifyPlayerAboutTeleportationFailure = true;
+
     public Map<String, GroupTeleportConfig> groupTeleports = Map.of(
             "tp_1", new GroupTeleportConfig(
                     "tp_1",

@@ -20,7 +20,6 @@ public class GroupTeleportRunnable implements Runnable {
     private final GroupTeleportService groupTeleportService;
     private final NoticeService noticeService;
     private final Server server;
-    private final Plugin plugin;
 
     private BukkitTask task;
     private boolean executed = false;
@@ -32,8 +31,7 @@ public class GroupTeleportRunnable implements Runnable {
             CountdownTimer timer,
             GroupTeleportService groupTeleportService,
             NoticeService noticeService,
-            Server server,
-            Plugin plugin
+            Server server
     ) {
         this.teleportId = teleportId;
         this.players = players;
@@ -42,7 +40,6 @@ public class GroupTeleportRunnable implements Runnable {
         this.groupTeleportService = groupTeleportService;
         this.noticeService = noticeService;
         this.server = server;
-        this.plugin = plugin;
     }
 
     public void setTask(BukkitTask task) {

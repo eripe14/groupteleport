@@ -5,8 +5,6 @@ import eu.okaeri.configs.OkaeriConfig;
 
 public class MessageConfig extends OkaeriConfig {
 
-    public Notice configReloaded = Notice.chat("&aPrzeładowano konfiguracje!");
-
     public Notice teleported = Notice.chat(
             "&aPrzeteleportowano!"
     );
@@ -17,6 +15,10 @@ public class MessageConfig extends OkaeriConfig {
 
     public Notice teleportCancelled = Notice.chat(
             "&cTeleportacja anulowana!"
+    );
+
+    public Notice teleportationFailed = Notice.chat(
+            "&cNie udało się znaleźć bezpiecznej lokalizacji do teleportacji!"
     );
 
 }

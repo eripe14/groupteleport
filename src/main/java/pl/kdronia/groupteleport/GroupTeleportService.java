@@ -1,6 +1,7 @@
 package pl.kdronia.groupteleport;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -10,8 +11,13 @@ import pl.kdronia.groupteleport.config.impl.PluginConfig;
 import pl.kdronia.groupteleport.notice.NoticeService;
 import pl.kdronia.groupteleport.random.RandomTeleportService;
 
-import java.util.*;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 public class GroupTeleportService {
 
@@ -38,76 +44,95 @@ public class GroupTeleportService {
     }
 
     public CompletableFuture<Boolean> teleportGroup(String teleportId, World world) {
-        return CompletableFuture.supplyAsync(
-                () -> this.executeTeleportation(teleportId, world),
-                this.server.getScheduler().getMainThreadExecutor(this.plugin)
-        );
+        Set<UUID> playerIds = this.stateManager.removePendingTeleport(teleportId);
+
+        if (playerIds == null || playerIds.isEmpty()) {
+            this.stateManager.removeActiveTeleport(teleportId);
+            return CompletableFuture.completedFuture(false);
+        }
+
+        return this.randomTeleportService.getRandomLocation(world)
+                .thenApplyAsync(locationOptional -> this.executeTeleportation(playerIds, locationOptional))
+                .exceptionally(ex -> {
+                    this.plugin.getLogger().severe("Failed to teleport group '" + teleportId + "': " + ex.getMessage());
+                    return false;
+                })
+                .whenComplete((result, ex) -> this.stateManager.removeActiveTeleport(teleportId));
     }
 
-    private boolean executeTeleportation(String teleportId, World world) {
-        Set<UUID> players = this.stateManager.removePendingTeleport(teleportId);
+    private boolean executeTeleportation(Set<UUID> playerIds, Optional<Location> locationOptional) {
+        List<Player> onlinePlayers = this.getOnlinePlayers(playerIds);
 
-        if (players == null || players.isEmpty()) {
+        if (onlinePlayers.isEmpty()) {
             return false;
         }
 
-        this.randomTeleportService.getRandomLocation(world).whenComplete((location, ex) -> {
-            if (ex != null) {
-                this.plugin.getLogger().severe("Failed to get random location: " + ex.getMessage());
-                return;
-            }
+        if (locationOptional.isEmpty()) {
+            this.notifyTeleportFailure(onlinePlayers);
+            return false;
+        }
 
-            if (location == null) {
-                return;
-            }
+        Location destination = locationOptional.get();
+        onlinePlayers.forEach(player -> player.teleportAsync(destination));
 
-            List<Player> onlinePlayers = this.getOnlinePlayersForTeleport(players);
-            if (onlinePlayers.isEmpty()) {
-                return;
-            }
-
-            for (Player player : onlinePlayers) {
-                player.teleportAsync(location);
-            }
-        });
-
-        this.stateManager.removeActiveTeleport(teleportId);
         return true;
     }
 
-    private List<Player> getOnlinePlayersForTeleport(Set<UUID> playerIds) {
+    private void notifyTeleportFailure(List<Player> players) {
+        if (!this.pluginConfig.notifyPlayerAboutTeleportationFailure) {
+            return;
+        }
+
+        List<UUID> playerIds = players.stream()
+                .map(Player::getUniqueId)
+                .toList();
+
+        this.noticeService.create()
+                .notice(messages -> messages.teleportationFailed)
+                .players(playerIds)
+                .send();
+    }
+
+    private List<Player> getOnlinePlayers(Set<UUID> playerIds) {
         return playerIds.stream()
                 .map(this.server::getPlayer)
                 .filter(Objects::nonNull)
-                .filter(Player::isOnline)
                 .toList();
     }
 
     public void addPlayer(String regionId, UUID playerId) {
         this.findTeleportIdByRegion(regionId).ifPresent(teleportId -> {
-            if (!this.stateManager.isPlayerPending(teleportId, playerId)) {
-                this.stateManager.addPendingPlayer(teleportId, playerId);
-                this.activateTeleport(teleportId);
+            if (this.stateManager.isPlayerPending(teleportId, playerId)) {
+                return;
             }
+
+            this.stateManager.addPendingPlayer(teleportId, playerId);
+            this.tryActivateTeleport(teleportId);
         });
     }
 
-    private Optional<String> findTeleportIdByRegion(String regionId) {
-        return this.pluginConfig.groupTeleports.values().stream()
-                .filter(config -> config.getWorldGuardRegionId().equals(regionId))
-                .map(GroupTeleportConfig::getId)
-                .findFirst();
-    }
-
     public void removePlayer(String teleportId, UUID playerId) {
+        this.stateManager.removePendingPlayer(teleportId, playerId);
+
         if (this.stateManager.isActiveTeleport(teleportId)) {
             this.cancelTeleport(teleportId);
         }
-
-        this.stateManager.removePendingPlayer(teleportId, playerId);
     }
 
-    public void activateTeleport(String teleportId) {
+    public void cancelTeleport(String teleportId) {
+        Set<UUID> players = this.stateManager.getPendingPlayers(teleportId);
+
+        if (players != null && !players.isEmpty()) {
+            this.noticeService.create()
+                    .notice(messages -> messages.teleportCancelled)
+                    .players(players)
+                    .send();
+        }
+
+        this.stateManager.cancelTeleport(teleportId);
+    }
+
+    private void tryActivateTeleport(String teleportId) {
         if (this.stateManager.isActiveTeleport(teleportId)) {
             return;
         }
@@ -124,15 +149,15 @@ public class GroupTeleportService {
         }
 
         World world = Bukkit.getWorld(config.getDestinationWorld());
-
         if (world == null) {
-            throw new IllegalStateException("Destination world not found: " + config.getDestinationWorld());
+            this.plugin.getLogger().severe("Destination world not found: " + config.getDestinationWorld());
+            return;
         }
 
-        this.startTeleportCountdown(teleportId, world, config.getTeleportTime());
+        this.startCountdown(teleportId, world, config.getTeleportTime());
     }
 
-    private void startTeleportCountdown(String teleportId, World world, int countdownSeconds) {
+    private void startCountdown(String teleportId, World world, int countdownSeconds) {
         Set<UUID> players = this.stateManager.getPendingPlayers(teleportId);
 
         if (players == null || players.isEmpty()) {
@@ -147,8 +172,7 @@ public class GroupTeleportService {
                 timer,
                 this,
                 this.noticeService,
-                this.server,
-                this.plugin
+                this.server
         );
 
         BukkitTask task = this.server.getScheduler().runTaskTimer(this.plugin, runnable, 0L, 1L);
@@ -157,21 +181,11 @@ public class GroupTeleportService {
         this.stateManager.setActiveTeleport(teleportId, task);
     }
 
-    public void cancelTeleport(String teleportId) {
-        Set<UUID> players = this.stateManager.getPendingPlayers(teleportId);
-
-        if (players != null) {
-            this.notifyPlayersAboutCancellation(players);
-        }
-
-        this.stateManager.cancelTeleport(teleportId);
-    }
-
-    private void notifyPlayersAboutCancellation(Set<UUID> players) {
-        this.noticeService.create()
-                .notice(messages -> messages.teleportCancelled)
-                .players(players)
-                .send();
+    private Optional<String> findTeleportIdByRegion(String regionId) {
+        return this.pluginConfig.groupTeleports.values().stream()
+                .filter(config -> config.getWorldGuardRegionId().equals(regionId))
+                .map(GroupTeleportConfig::getId)
+                .findFirst();
     }
 
     public void shutdown() {
